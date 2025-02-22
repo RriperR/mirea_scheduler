@@ -1,0 +1,45 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.swp
+*.swo
+*.DS_Store
+
+# Virtualenv
+venv/
+env/
+ENV/
+*.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Django
+*.log
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Migrations
+**/migrations/*.pyc
+**/migrations/*.pyo
+**/migrations/__pycache__/
+**/migrations/*.py
+
+# Environment Variables & Configs
+*.env
+.envrc
+secrets.json
+
+# Docker
+*.log
+docker-compose.override.yml
+__docker_cache__/
