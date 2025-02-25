@@ -1,4 +1,4 @@
-from .tasks import process_schedule
+from .tasks import update_schedule_task
 from issue_analizer.models import ScheduleIssue, ScheduleEvent, IssueCategory
 from issue_analizer.serializers import IssueSerializer
 from issue_analizer.services.schedule_service import ScheduleService
@@ -20,13 +20,16 @@ class IssueAPIView(ListAPIView):
 
     def get_queryset(self):
         """Перед выдачей данных проверяет их актуальность и обновляет при необходимости"""
-        if self.is_data_fresh():
-            print("🟢 Данные в БД свежие, загружаем из базы")
-        else:
-            print("🔴 Данные устарели, обновляем расписание...")
-            self.update_schedule()
+        queryset = ScheduleIssue.objects.all()
+        group = self.request.query_params.get("group")
+        teacher = self.request.query_params.get("teacher")
 
-        return ScheduleIssue.objects.all()
+        if group:
+            queryset = queryset.filter(related_event__group__icontains=group)
+        if teacher:
+            queryset = queryset.filter(related_event__teacher__icontains=teacher)
+
+        return queryset
 
     def is_data_fresh(self):
         """Проверяет, обновлялись ли данные за последние 24 часа"""
@@ -51,7 +54,6 @@ class IssueAPIView(ListAPIView):
             for issue in issues:
                 category, _ = IssueCategory.objects.get_or_create(name=issue["category"])
 
-                # 🔹 Создаём первое событие (основное)
                 related_event = ScheduleEvent.objects.create(
                     summary=truncate_text(issue["summary"], 255),
                     start_time=issue["start"],
@@ -62,7 +64,6 @@ class IssueAPIView(ListAPIView):
                     discipline=truncate_text(issue["discipline"], 255),
                 )
 
-                # 🔹 Проверяем, есть ли второе событие (`related_event_2`)
                 related_event_2 = ScheduleEvent.objects.create(
                     summary=truncate_text(issue["related_summary_2"], 255),
                     start_time=issue["related_start_2"],
@@ -83,7 +84,6 @@ class IssueAPIView(ListAPIView):
                 )
 
 
-
 def truncate_text(text, max_length=255):
     text = str(text)
     if len(text) > max_length:
@@ -92,21 +92,19 @@ def truncate_text(text, max_length=255):
 
 
 
-
-
 class ScheduleProcessingView(APIView):
-    """Запуск фоновой обработки"""
-
+    """API для запуска фоновой обработки расписания"""
     def post(self, request):
-        """Создаёт фоновый процесс и возвращает task_id"""
-        task = process_schedule.delay()
-        return Response({"task_id": task.id})
+        """Запуск фонового обновления"""
+        group = request.query_params.get("group")
+        teacher = request.query_params.get("teacher")
 
-    def get(self, request):
-        """Проверяет статус задачи по task_id"""
-        task_id = request.query_params.get("task_id")
-        if not task_id:
-            return Response({"error": "task_id обязателен"}, status=400)
+        task = update_schedule_task.delay(group=group, teacher=teacher)
+        return Response({"task_id": task.id}, status=201)
 
+
+class TaskStatusView(APIView):
+    """API для получения статуса Celery-задачи"""
+    def get(self, request, task_id):
         result = AsyncResult(task_id)
         return Response({"task_id": task_id, "status": result.status, "result": result.result})
