@@ -1,17 +1,22 @@
+import redis
+import hashlib
+from celery.result import AsyncResult
+
+from rest_framework.generics import ListAPIView
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
+from django.utils.timezone import now
+from django.db import transaction
+from django.conf import settings
+
 from .tasks import update_schedule_task
 from issue_analizer.models import ScheduleIssue, ScheduleEvent, IssueCategory
 from issue_analizer.serializers import IssueSerializer
 from issue_analizer.services.schedule_service import ScheduleService
 from issue_analizer.services.schedule_analyzer import ScheduleAnalyzer
 
-from rest_framework.generics import ListAPIView
-from rest_framework.views import APIView
-from rest_framework.response import Response
 
-from celery.result import AsyncResult
-
-from django.utils.timezone import now
-from django.db import transaction
 
 
 class IssueAPIView(ListAPIView):
@@ -91,16 +96,60 @@ def truncate_text(text, max_length=255):
     return text
 
 
+# Подключаем Redis
+redis_client = redis.StrictRedis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
+
 
 class ScheduleProcessingView(APIView):
-    """API для запуска фоновой обработки расписания"""
-    def post(self, request):
-        """Запуск фонового обновления"""
-        group = request.query_params.get("group")
-        teacher = request.query_params.get("teacher")
+    """API для запуска фоновой обработки расписания с очередью и уникальными запросами"""
 
+    REDIS_ACTIVE_TASK_KEY = "active_schedule_task"
+    REDIS_QUERY_HASH_KEY = "query_task_map"
+
+    def post(self, request):
+        """Запускаем обработку расписания (с управлением очередью и учётом параметров)"""
+
+        # Получаем query параметры
+        group = request.query_params.get("group", "")
+        teacher = request.query_params.get("teacher", "")
+
+        # Формируем уникальный ключ для запроса
+        query_string = f"group={group}&teacher={teacher}"
+        query_hash = hashlib.md5(query_string.encode()).hexdigest()
+
+        # Проверяем, есть ли уже активная задача
+        active_task_id = redis_client.get(self.REDIS_ACTIVE_TASK_KEY)
+
+        if active_task_id:
+            task_result = AsyncResult(active_task_id)
+
+            if task_result.state in ["PENDING", "STARTED"]:
+                # Проверяем, есть ли уже созданный task_id для этого запроса
+                existing_task_id = redis_client.hget(self.REDIS_QUERY_HASH_KEY, query_hash)
+                if existing_task_id:
+                    return Response({
+                        "task_id": existing_task_id,
+                        "status": "IN_QUEUE"
+                    }, status=202)
+
+        # Если новый запрос, создаём новую задачу
         task = update_schedule_task.delay(group=group, teacher=teacher)
-        return Response({"task_id": task.id}, status=201)
+
+        # Сохраняем новую задачу в Redis
+        redis_client.set(self.REDIS_ACTIVE_TASK_KEY, task.id, ex=3600)  # 1 час TTL
+        redis_client.hset(self.REDIS_QUERY_HASH_KEY, query_hash, task.id)  # Привязываем параметры к task_id
+
+        return Response({"task_id": task.id, "status": "STARTED"}, status=201)
+
+    def get(self, request):
+        """Проверяем статус задачи"""
+
+        task_id = redis_client.get(self.REDIS_ACTIVE_TASK_KEY)
+        if not task_id:
+            return Response({"status": "NO_ACTIVE_TASK"}, status=404)
+
+        result = AsyncResult(task_id)
+        return Response({"task_id": task_id, "status": result.status, "result": result.result})
 
 
 class TaskStatusView(APIView):
