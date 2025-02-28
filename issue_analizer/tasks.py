@@ -20,7 +20,7 @@ REDIS_QUERY_HASH_KEY = "query_task_map"
 
 @shared_task(bind=True)
 def update_schedule_task(self, group=None, teacher=None):
-    """Фоновая задача обновления расписания с учётом параметров"""
+    """Фоновая задача обновления расписания с безопасным обновлением БД"""
 
     # Формируем уникальный ключ запроса
     query_string = f"group={group}&teacher={teacher}"
@@ -29,8 +29,8 @@ def update_schedule_task(self, group=None, teacher=None):
     print(f"🔄 Начало обработки запроса: {query_string}")
 
     try:
-        print("🗑 Очищаем старые данные...")
-        ScheduleIssue.objects.all().delete()
+        print("📥 Загружаем новые данные...")
+        new_issues = []  # Список новых записей
 
         # Загружаем расписание
         schedule_data = []
@@ -40,39 +40,45 @@ def update_schedule_task(self, group=None, teacher=None):
         # Анализируем неудобства
         issues = ScheduleAnalyzer.find_issues(schedule_data)
 
-        # Сохраняем в БД
+        # Готовим новые объекты (но пока не сохраняем)
+        for issue in issues:
+            category, _ = IssueCategory.objects.get_or_create(name=issue["category"])
+
+            related_event = ScheduleEvent.objects.create(
+                summary=truncate_text(issue["summary"], 255),
+                start_time=issue["start"],
+                end_time=issue["end"],
+                location=truncate_text(issue["location"], 255),
+                teacher=truncate_text(issue["teacher"], 255),
+                group=truncate_text(issue["group"], 255),
+                discipline=truncate_text(issue["discipline"], 255),
+            )
+
+            related_event_2 = ScheduleEvent.objects.create(
+                summary=truncate_text(issue["related_summary_2"], 255),
+                start_time=issue["related_start_2"],
+                end_time=issue["related_end_2"],
+                location=truncate_text(issue["related_location_2"], 255),
+                teacher=truncate_text(issue["related_teacher_2"], 255),
+                group=truncate_text(issue["related_group_2"], 255),
+                discipline=truncate_text(issue["related_discipline_2"], 255),
+            )
+
+            new_issues.append(ScheduleIssue(
+                issue_type=category,
+                related_event=related_event,
+                related_event_2=related_event_2,
+                description=truncate_text(issue["description"], 255),
+                last_updated=now()
+            ))
+
+        # Атомарная замена данных в БД
         with transaction.atomic():
-            for issue in issues:
-                category, _ = IssueCategory.objects.get_or_create(name=issue["category"])
+            old_issues = ScheduleIssue.objects.all()
+            ScheduleIssue.objects.bulk_create(new_issues)
+            old_issues.delete()
 
-                related_event = ScheduleEvent.objects.create(
-                    summary=truncate_text(issue["summary"], 255),
-                    start_time=issue["start"],
-                    end_time=issue["end"],
-                    location=truncate_text(issue["location"], 255),
-                    teacher=truncate_text(issue["teacher"], 255),
-                    group=truncate_text(issue["group"], 255),
-                    discipline=truncate_text(issue["discipline"], 255),
-                )
-
-                related_event_2 = ScheduleEvent.objects.create(
-                    summary=truncate_text(issue["related_summary_2"], 255),
-                    start_time=issue["related_start_2"],
-                    end_time=issue["related_end_2"],
-                    location=truncate_text(issue["related_location_2"], 255),
-                    teacher=truncate_text(issue["related_teacher_2"], 255),
-                    group=truncate_text(issue["related_group_2"], 255),
-                    discipline=truncate_text(issue["related_discipline_2"], 255),
-                )
-
-                # 🔹 Создаём запись об ошибке и привязываем оба события
-                issue_obj = ScheduleIssue.objects.create(
-                    issue_type=category,
-                    related_event=related_event,
-                    related_event_2=related_event_2,
-                    description=truncate_text(issue["description"], 255),
-                    last_updated=now()
-                )
+        print("✅ База данных обновлена!")
 
         # Фильтрация по параметрам
         queryset = ScheduleIssue.objects.all()
@@ -96,7 +102,6 @@ def update_schedule_task(self, group=None, teacher=None):
         redis_client.hdel(REDIS_QUERY_HASH_KEY, query_hash)
 
         print(f"🗑 Очистка Redis после завершения задачи: {query_string}")
-
 
 def truncate_text(text, max_length=255):
     text = str(text)
