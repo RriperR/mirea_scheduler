@@ -9,10 +9,25 @@ class ScheduleService:
 
     @classmethod
     def fetch_schedule(cls):
-        """Получает список групп и ссылки на расписание"""
-        response = requests.get(cls.API_URL)
-        response.raise_for_status()
-        return response.json()["data"]
+        """Получает список групп и ссылки на расписание (постранично)"""
+        all_data = []
+        next_page_token = None
+
+        while True:
+            # Формируем URL с токеном страницы (если есть)
+            params = {"pageToken": next_page_token} if next_page_token else {}
+            response = requests.get(cls.API_URL, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+            all_data.extend(data["data"])  # Добавляем данные
+
+            # Проверяем, есть ли следующая страница
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
+                break  # Если страниц больше нет, выходим
+
+        return all_data
 
     @classmethod
     def fetch_ical(cls, ical_url):
@@ -47,8 +62,5 @@ class ScheduleService:
                 # Фильтруем события: оставляем только занятия с X-META-DISCIPLINE
                 if event["discipline"]:
                     events.append(event)
-                else:
-                    pass
 
         return events
-
