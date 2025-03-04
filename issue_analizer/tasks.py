@@ -72,20 +72,30 @@ def update_schedule_task(self, group=None, teacher=None):
                 last_updated=now()
             ))
 
-        # Атомарная замена данных в БД
+        #  Безопасное обновление БД
         with transaction.atomic():
-            old_issues = ScheduleIssue.objects.all()
-            ScheduleIssue.objects.bulk_create(new_issues)
-            old_issues.delete()
+            temp_issues = ScheduleIssue.objects.bulk_create(new_issues)  # Создаём новые данные
+            if temp_issues:  # Если новые данные успешно добавлены
+                ScheduleIssue.objects.exclude(id__in=[issue.id for issue in temp_issues]).delete()  # Удаляем старые
+            else:
+                print("⚠️ Новые данные не загружены, старые не удаляем!")
 
         print("✅ База данных обновлена!")
 
         # Фильтрация по параметрам
+        print(f"🔎 Всего записей в БД перед фильтрацией: {ScheduleIssue.objects.count()}")
         queryset = ScheduleIssue.objects.all()
+
         if group:
             queryset = queryset.filter(related_event__group__icontains=group)
+            print(f"🔎 После фильтрации по группе ({group}): {queryset.count()} записей")
+
         if teacher:
             queryset = queryset.filter(related_event__teacher__icontains=teacher)
+            print(f"🔎 После фильтрации по преподавателю ({teacher}): {queryset.count()} записей")
+
+        if queryset.count() == 0:
+            print("⚠️ Внимание: после фильтрации данных не осталось!")
 
         result_data = IssueSerializer(queryset, many=True).data
         print("✅ Запрос обработан успешно.")
